@@ -10,8 +10,7 @@ if (!API_KEY) {
 }
 
 // ── Serve static frontend ─────────────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, 'public')));
-
+app.use(express.static(__dirname));
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
@@ -78,7 +77,7 @@ app.get('/api/gex', async (req, res) => {
 });
 
 // ── Catch-all → frontend ──────────────────────────────────────────────────────
-app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅  Gamma Monitor running → http://localhost:${PORT}`));
