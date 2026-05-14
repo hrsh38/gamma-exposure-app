@@ -8,7 +8,7 @@ const BASE    = 'https://api.polygon.io';
 
 if (!API_KEY) console.warn('⚠️  POLYGON_API_KEY not set');
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname));
 
 app.get('/api/health', (_, res) => res.json({ ok: true, key: !!API_KEY }));
 
@@ -71,7 +71,7 @@ app.get('/api/gex', async (req, res) => {
   }
 });
 
-app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅  Gamma Monitor → http://localhost:${PORT}`));
