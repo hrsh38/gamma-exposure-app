@@ -31,11 +31,10 @@
 <script type="text/babel">
 const {useState,useEffect,useMemo,useRef,useLayoutEffect,useCallback} = React;
 
-// ── CONFIG ────────────────────────────────────────────────────────────────────
-const STRIKE_RANGE      = 10;     // ±10 strikes from current price
+const STRIKE_RANGE      = 10;
 const VIS_COUNT         = STRIKE_RANGE * 2 + 1;
-const PRICE_POLL_MS     = 5000;   // 5s
-const GEX_POLL_MS       = 30000;  // 30s
+const PRICE_POLL_MS     = 5000;
+const GEX_POLL_MS       = 30000;
 
 function getExpDates() {
   const today = new Date();
@@ -59,6 +58,17 @@ async function apiGet(path) {
   return r.json();
 }
 
+// Format large numbers as $X.XB / $X.XM
+function fmtGEX(n) {
+  if (n == null) return '—';
+  const a = Math.abs(n);
+  const sign = n >= 0 ? '+' : '−';
+  if (a >= 1e9) return `${sign}$${(a/1e9).toFixed(1)}B`;
+  if (a >= 1e6) return `${sign}$${(a/1e6).toFixed(0)}M`;
+  if (a >= 1e3) return `${sign}$${(a/1e3).toFixed(0)}K`;
+  return `${sign}$${a.toFixed(0)}`;
+}
+
 function App() {
   const EXP_DATES = useMemo(getExpDates, []);
 
@@ -72,7 +82,6 @@ function App() {
   const [gexErr,     setGexErr]     = useState('');
   const [lastTick,   setLastTick]   = useState(new Date());
 
-  // Price polling
   useEffect(() => {
     let alive = true;
     const poll = async () => {
@@ -80,7 +89,7 @@ function App() {
         const {price:p, prevClose} = await apiGet('/api/price');
         if (!alive) return;
         if (p) { setPrice(p); setPriceOk(true); setLastTick(new Date()); }
-        if (prevClose && !openPrice) setOpenPrice(prevClose);
+        if (prevClose) setOpenPrice(c => c ?? prevClose);
       } catch { if (alive) setPriceOk(false); }
     };
     poll();
@@ -88,12 +97,10 @@ function App() {
     return () => { alive=false; clearInterval(id); };
   }, []);
 
-  // Prev close fallback
   useEffect(() => {
     apiGet('/api/prevclose').then(({close}) => { if(close) setOpenPrice(c => c ?? close); }).catch(()=>{});
   }, []);
 
-  // GEX polling
   const loadGEX = useCallback(async () => {
     setGexStatus('loading');
     setGexErr('');
@@ -106,8 +113,7 @@ function App() {
       } else {
         setGammaData(data);
         setGexStatus('ok');
-        // Fallback to underlying price if /api/price hasn't returned yet
-        if (underlying && !price) setPrice(underlying);
+        if (underlying) setPrice(p => p ?? underlying);
       }
     } catch(e) {
       setGexStatus('error');
@@ -121,7 +127,6 @@ function App() {
     return () => clearInterval(id);
   }, [loadGEX]);
 
-  // Adaptive row height
   const chartRef = useRef(null);
   const [chartH, setChartH] = useState(0);
   useLayoutEffect(() => {
@@ -131,7 +136,7 @@ function App() {
     return () => ro.disconnect();
   }, []);
 
-  // Stats use FULL data (so walls/flip are accurate across the whole expiry)
+  // Net Γ uses FULL expiration's strikes (walls/flip stay accurate)
   const netGamma = useMemo(() => gammaData.reduce((s,d)=>s+d.gamma,0), [gammaData]);
 
   const flipPoint = useMemo(() => {
@@ -155,25 +160,20 @@ function App() {
     return neg.length ? neg.reduce((m,d)=>d.gamma<m.gamma?d:m).strike : null;
   }, [gammaData]);
 
-  // ── Zoom to ±10 strikes from current price ────────────────────────────────
+  // Zoom to ±10 strikes
   const visibleData = useMemo(() => {
     if (!gammaData.length) return [];
     const asc    = [...gammaData].sort((a,b)=>a.strike-b.strike);
     const anchor = Math.round(price ?? asc[Math.floor(asc.length/2)]?.strike ?? 0);
-    const inRange = asc.filter(d =>
-      d.strike >= anchor - STRIKE_RANGE &&
-      d.strike <= anchor + STRIKE_RANGE
-    );
-    return inRange.reverse(); // high strikes at top
+    return asc.filter(d => d.strike >= anchor - STRIKE_RANGE && d.strike <= anchor + STRIKE_RANGE).reverse();
   }, [gammaData, price]);
 
-  // ── Rescale bars based on what's VISIBLE — fixes outlier compression ──────
+  // Scale bars to what's visible (no outlier compression)
   const maxAbs = useMemo(() =>
     Math.max(...visibleData.map(d=>Math.abs(d.gamma)),1),
     [visibleData]
   );
 
-  // Row height = chart height / fixed 21 rows
   const rowH = chartH > 0 ? chartH / VIS_COUNT : 14;
 
   const insights = useMemo(() => {
@@ -215,8 +215,6 @@ function App() {
     neu:  {background:'rgba(255,255,255,.06)',color:'#a1a1aa'},
   }[t] ?? {});
 
-  const statusLabel = priceOk ? 'Live' : 'Connecting';
-
   return (
     <div style={{height:'100dvh',fontFamily:"'Outfit',system-ui,sans-serif",background:'#06080C',color:'#fff',display:'flex',flexDirection:'column',overflow:'hidden',position:'relative'}}>
 
@@ -227,11 +225,10 @@ function App() {
 
       <div style={{position:'relative',maxWidth:448,margin:'0 auto',width:'100%',display:'flex',flexDirection:'column',height:'100%'}}>
 
-        {/* Header */}
         <div style={{flexShrink:0,padding:'16px 20px 8px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <div className="pdot" style={{width:6,height:6,borderRadius:'50%',background:priceOk?'#34d399':'#fbbf24'}}/>
-            <span style={{fontSize:10,color:'#d4d4d8',textTransform:'uppercase',letterSpacing:'.2em',fontWeight:500}}>{statusLabel}</span>
+            <span style={{fontSize:10,color:'#d4d4d8',textTransform:'uppercase',letterSpacing:'.2em',fontWeight:500}}>{priceOk?'Live':'Connecting'}</span>
             <span style={{fontSize:10,color:'#3f3f46',margin:'0 2px'}}>·</span>
             <span className="mono" style={{fontSize:10,color:'#a1a1aa',fontWeight:600}}>SPY</span>
             {gexStatus==='loading' && (
@@ -245,7 +242,6 @@ function App() {
           </span>
         </div>
 
-        {/* Exp picker */}
         <div style={{flexShrink:0,padding:'0 20px 8px'}}>
           <button onClick={()=>setShowExp(true)} style={{width:'100%',background:'rgba(255,255,255,.03)',border:'1px solid rgba(255,255,255,.06)',borderRadius:12,padding:'8px 12px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'pointer',color:'#fff'}}>
             <div style={{textAlign:'left'}}>
@@ -256,20 +252,18 @@ function App() {
           </button>
         </div>
 
-        {/* Legend */}
         <div style={{flexShrink:0,padding:'0 20px 4px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             <div style={{width:4,height:4,borderRadius:'50%',background:'#f43f5e'}}/>
             <span style={{fontSize:8,color:'#71717a',textTransform:'uppercase',letterSpacing:'.15em'}}>Puts</span>
           </div>
-          <span style={{fontSize:8,color:'#3f3f46',textTransform:'uppercase',letterSpacing:'.15em'}}>Γ Exposure · ±{STRIKE_RANGE}</span>
+          <span style={{fontSize:8,color:'#3f3f46',textTransform:'uppercase',letterSpacing:'.15em'}}>Net Γ · $/1% · ±{STRIKE_RANGE}</span>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             <span style={{fontSize:8,color:'#71717a',textTransform:'uppercase',letterSpacing:'.15em'}}>Calls</span>
             <div style={{width:4,height:4,borderRadius:'50%',background:'#34d399'}}/>
           </div>
         </div>
 
-        {/* Chart */}
         <div ref={chartRef} style={{flex:1,padding:'0 8px',overflow:'hidden'}}>
 
           {gexStatus==='loading' && gammaData.length===0 && (
@@ -345,10 +339,9 @@ function App() {
           })}
         </div>
 
-        {/* Stats */}
         <div style={{flexShrink:0,padding:'8px 20px',borderTop:'1px solid rgba(255,255,255,.06)',display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
           {[
-            {label:'Net Γ', val:gammaData.length?`${netGamma>=0?'+':''}${(netGamma/1e6).toFixed(1)}M`:'—', color:netGamma>=0?'#34d399':'#f43f5e'},
+            {label:'Net Γ', val:gammaData.length?fmtGEX(netGamma):'—', color:netGamma>=0?'#34d399':'#f43f5e'},
             {label:'Flip',  val:flipPoint!=null?String(flipPoint):'—', color:'#e4e4e7'},
             {label:'C·Wall',val:callWall!=null?String(callWall):'—',   color:'#34d399'},
             {label:'P·Wall',val:putWall!=null?String(putWall):'—',     color:'#f43f5e'},
@@ -360,7 +353,6 @@ function App() {
           ))}
         </div>
 
-        {/* Insights */}
         <div style={{flexShrink:0,margin:'4px 12px 12px',borderRadius:12,border:'1px solid rgba(255,255,255,.08)',background:'linear-gradient(135deg,rgba(255,255,255,.04),transparent)',padding:12}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
             <div style={{display:'flex',alignItems:'center',gap:6}}>

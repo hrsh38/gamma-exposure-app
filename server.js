@@ -12,7 +12,6 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/health", (_, res) => res.json({ ok: true, key: !!API_KEY }));
 
-// Snapshot endpoint — returns last known price even after hours
 app.get("/api/price", async (_, res) => {
   try {
     const r = await fetch(
@@ -48,6 +47,9 @@ app.get("/api/prevclose", async (_, res) => {
   }
 });
 
+// NET GEX per strike for ONE expiration, in "$ Per 1% Move" (QuantData default)
+// Raw per-strike: (call_gamma × call_OI − put_gamma × put_OI) × 100
+// Scaled by spot² × 0.01 to convert to dollar gamma per 1% underlying move
 app.get("/api/gex", async (req, res) => {
   const expDate = req.query.exp;
   if (!expDate)
@@ -62,7 +64,6 @@ app.get("/api/gex", async (req, res) => {
     while (pageUrl && pages < 20) {
       const r = await fetch(pageUrl);
       const json = await r.json();
-
       if (json.status === "ERROR")
         throw new Error(json.error ?? "Polygon API error");
 
@@ -74,13 +75,23 @@ app.get("/api/gex", async (req, res) => {
         const type = row.details?.contract_type;
         const k = row.details?.strike_price;
         if (gamma == null || !k || !type) continue;
+
+        // Raw share gamma exposure: gamma × OI × 100 (per $1 underlying move)
+        const raw = gamma * oi * 100;
         if (!byStrike[k]) byStrike[k] = { strike: k, gamma: 0 };
-        byStrike[k].gamma +=
-          type === "call" ? gamma * oi * 100 : -(gamma * oi * 100);
+        byStrike[k].gamma += type === "call" ? raw : -raw;
       }
 
       pageUrl = json.next_url ? `${json.next_url}&apiKey=${API_KEY}` : null;
       pages++;
+    }
+
+    // Scale to $ Per 1% Move (QuantData's default metric)
+    // dollar_gamma = share_gamma × spot²
+    // per_1pct     = dollar_gamma × 0.01
+    if (underlying) {
+      const scale = underlying * underlying * 0.01;
+      for (const k of Object.keys(byStrike)) byStrike[k].gamma *= scale;
     }
 
     const data = Object.values(byStrike).sort((a, b) => a.strike - b.strike);
