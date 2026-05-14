@@ -44,51 +44,99 @@ app.get("/api/prevclose", async (_, res) => {
   }
 });
 
-// ── DEBUG: inspect raw Polygon data for a single strike ─────────────────────
-// Usage: /api/debug?exp=2026-05-13&strike=743
+// ── List all available expirations for SPY (so we know what's actually live)
+app.get("/api/expirations", async (_, res) => {
+  try {
+    const url = `${BASE}/v3/reference/options/contracts?underlying_ticker=SPY&limit=1000&expired=false&apiKey=${API_KEY}`;
+    const r = await fetch(url);
+    const json = await r.json();
+    const exps = [
+      ...new Set((json.results ?? []).map((c) => c.expiration_date)),
+    ].sort();
+    res.json({ expirations: exps.slice(0, 20), total: exps.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Inspect a strike: shows what Polygon actually returns
 app.get("/api/debug", async (req, res) => {
   const expDate = req.query.exp;
-  const strike = parseFloat(req.query.strike);
-  if (!expDate || !strike)
-    return res.status(400).json({ error: "exp and strike required" });
+  const strike = req.query.strike ? parseFloat(req.query.strike) : null;
+  if (!expDate) return res.status(400).json({ error: "exp required" });
 
   try {
-    const url = `${BASE}/v3/snapshot/options/SPY?expiration_date=${expDate}&strike_price=${strike}&apiKey=${API_KEY}`;
+    // First just get ALL contracts for this expiration so we can see what strikes exist
+    const url = strike
+      ? `${BASE}/v3/snapshot/options/SPY?expiration_date=${expDate}&strike_price=${strike}&apiKey=${API_KEY}`
+      : `${BASE}/v3/snapshot/options/SPY?expiration_date=${expDate}&limit=250&apiKey=${API_KEY}`;
+
     const r = await fetch(url);
     const json = await r.json();
 
-    const rows = (json.results ?? []).map((row) => ({
-      type: row.details?.contract_type,
-      strike: row.details?.strike_price,
-      gamma: row.greeks?.gamma,
-      delta: row.greeks?.delta,
-      iv: row.implied_volatility,
-      open_interest: row.open_interest,
-      volume: row.day?.volume,
-      last_price: row.last_trade?.price,
-      underlying: row.underlying_asset?.price,
-    }));
+    const all = json.results ?? [];
 
-    const call = rows.find((r) => r.type === "call");
-    const put = rows.find((r) => r.type === "put");
-    const spot = call?.underlying ?? put?.underlying ?? 0;
-    const scale = spot * spot * 0.01;
+    // Summary stats
+    const withGamma = all.filter((r) => r.greeks?.gamma != null);
+    const withOI = all.filter((r) => r.open_interest > 0);
+    const strikes = [...new Set(all.map((r) => r.details?.strike_price))].sort(
+      (a, b) => a - b,
+    );
+    const spot = all[0]?.underlying_asset?.price ?? null;
 
+    // If specific strike, return full detail
+    if (strike) {
+      const call = all.find((r) => r.details?.contract_type === "call");
+      const put = all.find((r) => r.details?.contract_type === "put");
+      const scale = spot ? spot * spot * 0.01 : 0;
+      return res.json({
+        expiration: expDate,
+        strike,
+        underlying: spot,
+        scale,
+        call_raw: call
+          ? {
+              gamma: call.greeks?.gamma,
+              delta: call.greeks?.delta,
+              iv: call.implied_volatility,
+              oi: call.open_interest,
+              volume: call.day?.volume,
+              last_price: call.last_trade?.price,
+            }
+          : null,
+        put_raw: put
+          ? {
+              gamma: put.greeks?.gamma,
+              delta: put.greeks?.delta,
+              iv: put.implied_volatility,
+              oi: put.open_interest,
+              volume: put.day?.volume,
+              last_price: put.last_trade?.price,
+            }
+          : null,
+        computed: {
+          call_dollar_gex: call
+            ? call.greeks?.gamma * call.open_interest * 100 * scale
+            : 0,
+          put_dollar_gex: put
+            ? put.greeks?.gamma * put.open_interest * 100 * scale
+            : 0,
+        },
+      });
+    }
+
+    // Otherwise return summary of what's available
     res.json({
-      strike,
       expiration: expDate,
       underlying: spot,
-      call_raw: call,
-      put_raw: put,
-      computed: {
-        call_dollar_gex: call
-          ? call.gamma * call.open_interest * 100 * scale
-          : 0,
-        put_dollar_gex: put ? put.gamma * put.open_interest * 100 * scale : 0,
-        net_dollar_gex:
-          (call ? call.gamma * call.open_interest * 100 * scale : 0) -
-          (put ? put.gamma * put.open_interest * 100 * scale : 0),
-      },
+      total_contracts: all.length,
+      contracts_with_gamma: withGamma.length,
+      contracts_with_oi: withOI.length,
+      strike_range: { min: strikes[0], max: strikes[strikes.length - 1] },
+      strikes_count: strikes.length,
+      sample_strikes_near_spot: spot
+        ? strikes.filter((s) => Math.abs(s - spot) <= 5)
+        : strikes.slice(0, 20),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
